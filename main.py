@@ -24,9 +24,22 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import json, os, datetime
 
 # Pastas onde os arquivos serão salvos.
-# os.makedirs com exist_ok=True não lança erro se a pasta já existir.
-PASTA_JSON = "checklists"
-PASTA_PDF  = "pdfs"
+#
+# Por que /data?
+#   No Railway, volumes persistentes são montados em /data (ou o caminho configurado).
+#   Arquivos fora de /data são apagados a cada deploy/reinício (armazenamento efêmero).
+#   Localmente (sem volume), cria as pastas relativas ao diretório atual — funciona igual.
+#
+# Como funciona:
+#   - Railway cria um disco virtual e o "conecta" ao servidor no caminho /data
+#   - Tudo salvo em /data sobrevive a restarts, deploys e até upgrades do serviço
+#   - Para ativar: no painel Railway → seu serviço → Volumes → Add Volume → Mount: /data
+#
+# os.environ.get("DATA_DIR", "/data") → lê a variável de ambiente DATA_DIR se existir,
+# caso contrário usa "/data". Permite customizar o caminho sem alterar o código.
+BASE_DIR   = os.environ.get("DATA_DIR", "/data")
+PASTA_JSON = os.path.join(BASE_DIR, "checklists")
+PASTA_PDF  = os.path.join(BASE_DIR, "pdfs")
 os.makedirs(PASTA_JSON, exist_ok=True)
 os.makedirs(PASTA_PDF,  exist_ok=True)
 
@@ -158,9 +171,10 @@ class Handler(BaseHTTPRequestHandler):
             self._responder(200, arquivos)
 
         elif self.path == "/pdfs":
-            # Lista todos os PDFs salvos
+            # Retorna página HTML com links clicáveis para cada PDF salvo.
+            # Antes retornava JSON bruto — o navegador não sabia que eram links.
             arquivos = sorted(os.listdir(PASTA_PDF), reverse=True)
-            self._responder(200, arquivos)
+            self._responder_html_pdfs(arquivos)
 
         elif self.path.startswith("/pdfs/"):
             # Serve um PDF específico para download.
@@ -204,6 +218,48 @@ class Handler(BaseHTTPRequestHandler):
     # ──────────────────────────────────────────────────────────────────────────
     #  Helpers
     # ──────────────────────────────────────────────────────────────────────────
+
+    def _responder_html_pdfs(self, arquivos: list):
+        """
+        Gera uma página HTML simples com a lista de PDFs como links clicáveis.
+        Clicar no link abre o PDF diretamente no navegador via rota /pdfs/<arquivo>.
+        """
+        if not arquivos:
+            linhas = "<p>Nenhum PDF enviado ainda.</p>"
+        else:
+            itens = "\n".join(
+                f'<li><a href="/pdfs/{f}" target="_blank">{f}</a></li>'
+                for f in arquivos
+            )
+            linhas = f"<ul style='line-height:2'>{itens}</ul>"
+
+        html = f"""<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="UTF-8">
+  <title>PDFs — Checklist Técnico</title>
+  <style>
+    body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; }}
+    h1   {{ color: #194c8c; }}
+    a    {{ color: #194c8c; }}
+    li   {{ margin: 4px 0; }}
+  </style>
+</head>
+<body>
+  <h1>📄 Relatórios PDF</h1>
+  <p>{len(arquivos)} arquivo(s) encontrado(s).</p>
+  {linhas}
+  <hr>
+  <a href="/checklists">Ver JSONs</a>
+</body>
+</html>"""
+
+        corpo = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type",   "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(corpo)))
+        self.end_headers()
+        self.wfile.write(corpo)
 
     def _responder(self, codigo: int, dados):
         """
